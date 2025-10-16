@@ -44,16 +44,22 @@ uv run python app.py
 
 The app will be available at http://localhost:7860
 
-**Using Docker:**
+**Using Docker (pre-built image):**
+```bash
+# Run with .env file (recommended)
+docker run -p 7860:7860 --env-file .env ghcr.io/chrisleaman/mistral-ocr-gradio:latest
+
+# Or pass API key directly
+docker run -p 7860:7860 -e MISTRAL_API_KEY=your_key_here ghcr.io/chrisleaman/mistral-ocr-gradio:latest
+```
+
+**Building locally:**
 ```bash
 # Build the image
 docker build -t mistral-ocr-gradio .
 
 # Run with .env file (recommended)
 docker run -p 7860:7860 --env-file .env mistral-ocr-gradio
-
-# Or pass API key directly
-docker run -p 7860:7860 -e MISTRAL_API_KEY=your_key_here mistral-ocr-gradio
 ```
 
 The app will be available at http://localhost:7860
@@ -95,6 +101,23 @@ The application uses Mistral's OCR API which:
 - `MISTRAL_API_KEY` (required): Your Mistral API key from https://console.mistral.ai/
 - `GRADIO_SERVER_NAME` (optional): Server hostname, defaults to `localhost` for local dev, set to `0.0.0.0` in Docker
 - `GRADIO_SERVER_PORT` (optional): Server port, defaults to `7860`
+
+## CI/CD
+
+The project uses GitHub Actions to automatically build and push Docker images:
+
+- **Workflow file**: `.github/workflows/docker-build.yml`
+- **Triggers**: Push to `main` branch, version tags, and pull requests
+- **Registry**: GitHub Container Registry (ghcr.io)
+- **Image location**: `ghcr.io/chrisleaman/mistral-ocr-gradio`
+
+**Image tags generated:**
+- `latest` - Latest build from main branch
+- `main` - Main branch builds
+- `v*` - Semantic version tags (e.g., v1.0.0)
+- `<branch>-<sha>` - Commit-specific builds
+
+The workflow includes Docker layer caching for faster builds.
 
 ## Development Notes
 

@@ -40,7 +40,21 @@ A simple web application that converts PDF files to Markdown using Mistral's OCR
 
 ## Docker Usage
 
-Build and run using Docker:
+### Using Pre-built Image (Recommended)
+
+Pull and run the latest image from GitHub Container Registry:
+
+```bash
+# Run with .env file (recommended)
+docker run -p 7860:7860 --env-file .env ghcr.io/chrisleaman/mistral-ocr-gradio:latest
+
+# Or pass API key directly as environment variable
+docker run -p 7860:7860 -e MISTRAL_API_KEY=your_key_here ghcr.io/chrisleaman/mistral-ocr-gradio:latest
+```
+
+### Building Locally
+
+Or build and run from source:
 
 ```bash
 # Build the image
