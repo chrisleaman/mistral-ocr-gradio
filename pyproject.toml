@@ -1,0 +1,14 @@
+[project]
+name = "mistral-ocr-gradio"
+version = "0.1.0"
+description = "A Gradio web app for PDF OCR using Mistral API"
+requires-python = ">=3.9"
+dependencies = [
+    "mistralai>=1.0.0",
+    "gradio>=4.0.0",
+    "python-dotenv>=1.0.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
