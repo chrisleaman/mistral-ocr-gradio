@@ -8,6 +8,7 @@ from mistralai import Mistral
 from dotenv import load_dotenv
 from pydantic import BaseModel, Field
 from mistralai.extra import response_format_from_pydantic_model
+from google import genai
 
 # Load environment variables
 load_dotenv()
@@ -18,6 +19,18 @@ if not api_key:
     raise ValueError("MISTRAL_API_KEY environment variable not set")
 
 client = Mistral(api_key=api_key)
+
+# Initialize Gemini client (optional)
+# New SDK automatically picks up GEMINI_API_KEY or GOOGLE_API_KEY from environment
+gemini_available = False
+google_client = None
+google_api_key = os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY")
+if google_api_key:
+    try:
+        google_client = genai.Client(api_key=google_api_key)
+        gemini_available = True
+    except Exception:
+        gemini_available = False
 
 
 # Define Pydantic model for image descriptions
@@ -48,7 +61,45 @@ def upload_pdf_to_mistral(pdf_file):
     return signed_url.url
 
 
-def process_pdf_ocr(pdf_file, include_image_descriptions=True, progress=gr.Progress()):
+def cleanup_markdown_with_gemini(markdown_content):
+    """Use Gemini to clean up and format the markdown content."""
+    if not gemini_available or not google_client:
+        return markdown_content
+
+    prompt = """You are a markdown formatting expert. Your task is to clean up and improve the formatting of OCR-extracted markdown content from a PDF document.
+
+Please perform the following cleanup tasks:
+
+1. **Remove page markers**: Delete all `<!-- Page X -->` comment tags
+2. **Fix paragraph spacing**: If text appears to run from one page to another mid-sentence or mid-paragraph, merge them together properly without extra line breaks
+3. **Format Tables of Contents**: Convert any table of contents sections (with dots/periods like "Section Name ..... Page Number") into proper markdown tables with columns for "Section" and "Page"
+4. **Format Lists of Tables/Figures**: Convert any "List of Tables" or "List of Figures" sections (with dots/periods) into proper markdown tables
+5. **Improve table formatting**: Ensure all markdown tables have proper spacing and are human-readable
+6. **Preserve structure**: Keep all headings, lists, and other formatting intact
+7. **Preserve content**: Do not remove, summarize, or change any actual content - only improve formatting
+8. **Format Abbreviations**: If there is a section for abbreviations, it is most likely this should be presented as a table
+9. **Format Tables**: Tables should have human readable spacing.
+
+Return ONLY the cleaned markdown content without any explanations or commentary. 
+
+You do not need to wrap the entire text in ```markdown tags.
+
+Here is the markdown to clean up:
+
+"""
+
+    try:
+        response = google_client.models.generate_content(
+            model='gemini-2.0-flash-exp',
+            contents=prompt + markdown_content
+        )
+        return response.text
+    except Exception:
+        # If Gemini fails, return original markdown
+        return markdown_content
+
+
+def process_pdf_ocr(pdf_file, include_image_descriptions=True, cleanup_with_gemini=False, progress=gr.Progress()):
     """Process PDF file with Mistral OCR and return markdown content."""
     try:
         progress(0, desc="Uploading PDF to Mistral...")
@@ -75,12 +126,6 @@ def process_pdf_ocr(pdf_file, include_image_descriptions=True, progress=gr.Progr
 
         progress(0.7, desc="Generating markdown...")
 
-        # Debug: Print summary of image annotations
-        if include_image_descriptions:
-            total_images = sum(len(page.images) if hasattr(page, 'images') else 0 for page in ocr_response.pages)
-            print(f"=== Image Descriptions Processing ===")
-            print(f"Total images with annotations: {total_images}")
-
         # Combine all pages into a single markdown string
         markdown_content = ""
         for idx, page in enumerate(ocr_response.pages, 1):
@@ -89,14 +134,13 @@ def process_pdf_ocr(pdf_file, include_image_descriptions=True, progress=gr.Progr
 
             # Replace ![image] markers with descriptions if image annotations are available
             if include_image_descriptions and hasattr(page, 'images') and page.images:
-                for img_idx, image in enumerate(page.images):
+                for image in page.images:
                     # The image_annotation is a JSON string, parse it
                     if hasattr(image, 'image_annotation') and image.image_annotation:
                         try:
                             annotation_dict = json.loads(image.image_annotation)
                             description = annotation_dict.get('description', '')
                             if description:
-                                print(f"  Page {idx}, Image {img_idx}: Replacing image marker with description ({len(description)} chars)")
                                 # Find and replace the first ![...] pattern with the description
                                 page_markdown = re.sub(
                                     r'!\[.*?\]\(.*?\)',
@@ -104,12 +148,17 @@ def process_pdf_ocr(pdf_file, include_image_descriptions=True, progress=gr.Progr
                                     page_markdown,
                                     count=1
                                 )
-                        except json.JSONDecodeError as e:
-                            print(f"Error parsing image annotation: {e}")
+                        except json.JSONDecodeError:
+                            # Skip this image if annotation parsing fails
                             continue
 
             markdown_content += page_markdown
             markdown_content += "\n\n"
+
+        # Clean up markdown with Gemini if enabled
+        if cleanup_with_gemini and gemini_available:
+            progress(0.9, desc="Cleaning up markdown with Gemini...")
+            markdown_content = cleanup_markdown_with_gemini(markdown_content)
 
         progress(1.0, desc="Complete!")
 
@@ -142,6 +191,14 @@ with gr.Blocks(title="Mistral OCR - PDF to Markdown") as demo:
                 value=True,
                 info="Replace image markers with AI-generated descriptions"
             )
+            gemini_cleanup_toggle = gr.Checkbox(
+                label="Clean markdown with Gemini",
+                value=True,
+                info="Use Gemini to format tables of contents, fix spacing, and improve formatting",
+                interactive=gemini_available
+            )
+            if not gemini_available:
+                gr.Markdown("⚠️ **Gemini cleanup unavailable**: Set GOOGLE_API_KEY in .env to enable")
             process_btn = gr.Button("Convert to Markdown", variant="primary")
             status_text = gr.Textbox(label="Status", interactive=False)
 
@@ -157,7 +214,7 @@ with gr.Blocks(title="Mistral OCR - PDF to Markdown") as demo:
     # Set up event handlers
     process_btn.click(
         fn=process_pdf_ocr,
-        inputs=[pdf_input, image_desc_toggle],
+        inputs=[pdf_input, image_desc_toggle, gemini_cleanup_toggle],
         outputs=[markdown_output, download_btn, status_text]
     )
 
@@ -165,11 +222,13 @@ with gr.Blocks(title="Mistral OCR - PDF to Markdown") as demo:
     ## Instructions
     1. Upload a PDF file using the file picker above
     2. Toggle "Include image descriptions" to enable/disable AI-generated descriptions for figures and charts
-    3. Click "Convert to Markdown" to process the PDF
-    4. View the extracted markdown in the output box
-    5. Download the markdown file using the download button
+    3. Toggle "Clean markdown with Gemini" to automatically format tables of contents, fix spacing, and improve formatting 
+    4. Click "Convert to Markdown" to process the PDF
+    5. View the extracted markdown in the output box
+    6. Download the markdown file using the download button
 
     **Note:** Make sure you have set the `MISTRAL_API_KEY` environment variable with your Mistral API key.
+    For Gemini cleanup, also set `GOOGLE_API_KEY` in your .env file.
     """)
 
 
