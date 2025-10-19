@@ -1,9 +1,13 @@
 import os
+import re
+import json
 import tempfile
 from pathlib import Path
 import gradio as gr
 from mistralai import Mistral
 from dotenv import load_dotenv
+from pydantic import BaseModel, Field
+from mistralai.extra import response_format_from_pydantic_model
 
 # Load environment variables
 load_dotenv()
@@ -14,6 +18,11 @@ if not api_key:
     raise ValueError("MISTRAL_API_KEY environment variable not set")
 
 client = Mistral(api_key=api_key)
+
+
+# Define Pydantic model for image descriptions
+class ImageDescription(BaseModel):
+    description: str = Field(..., description="A detailed description of the image content")
 
 
 def upload_pdf_to_mistral(pdf_file):
@@ -39,7 +48,7 @@ def upload_pdf_to_mistral(pdf_file):
     return signed_url.url
 
 
-def process_pdf_ocr(pdf_file, progress=gr.Progress()):
+def process_pdf_ocr(pdf_file, include_image_descriptions=True, progress=gr.Progress()):
     """Process PDF file with Mistral OCR and return markdown content."""
     try:
         progress(0, desc="Uploading PDF to Mistral...")
@@ -49,23 +58,57 @@ def process_pdf_ocr(pdf_file, progress=gr.Progress()):
 
         progress(0.3, desc="Processing OCR...")
 
-        # Process OCR
-        ocr_response = client.ocr.process(
-            model="mistral-ocr-latest",
-            document={
+        # Process OCR with optional image descriptions
+        ocr_params = {
+            "model": "mistral-ocr-latest",
+            "document": {
                 "type": "document_url",
                 "document_url": pdf_url,
             },
+        }
 
-        )
+        # Add bbox annotation format if image descriptions are enabled
+        if include_image_descriptions:
+            ocr_params["bbox_annotation_format"] = response_format_from_pydantic_model(ImageDescription)
+
+        ocr_response = client.ocr.process(**ocr_params)
 
         progress(0.7, desc="Generating markdown...")
+
+        # Debug: Print summary of image annotations
+        if include_image_descriptions:
+            total_images = sum(len(page.images) if hasattr(page, 'images') else 0 for page in ocr_response.pages)
+            print(f"=== Image Descriptions Processing ===")
+            print(f"Total images with annotations: {total_images}")
 
         # Combine all pages into a single markdown string
         markdown_content = ""
         for idx, page in enumerate(ocr_response.pages, 1):
             markdown_content += f"<!-- Page {idx} -->\n\n"
-            markdown_content += page.markdown
+            page_markdown = page.markdown
+
+            # Replace ![image] markers with descriptions if image annotations are available
+            if include_image_descriptions and hasattr(page, 'images') and page.images:
+                for img_idx, image in enumerate(page.images):
+                    # The image_annotation is a JSON string, parse it
+                    if hasattr(image, 'image_annotation') and image.image_annotation:
+                        try:
+                            annotation_dict = json.loads(image.image_annotation)
+                            description = annotation_dict.get('description', '')
+                            if description:
+                                print(f"  Page {idx}, Image {img_idx}: Replacing image marker with description ({len(description)} chars)")
+                                # Find and replace the first ![...] pattern with the description
+                                page_markdown = re.sub(
+                                    r'!\[.*?\]\(.*?\)',
+                                    description,
+                                    page_markdown,
+                                    count=1
+                                )
+                        except json.JSONDecodeError as e:
+                            print(f"Error parsing image annotation: {e}")
+                            continue
+
+            markdown_content += page_markdown
             markdown_content += "\n\n"
 
         progress(1.0, desc="Complete!")
@@ -94,6 +137,11 @@ with gr.Blocks(title="Mistral OCR - PDF to Markdown") as demo:
                 file_types=[".pdf"],
                 type="filepath"
             )
+            image_desc_toggle = gr.Checkbox(
+                label="Include image descriptions",
+                value=True,
+                info="Replace image markers with AI-generated descriptions"
+            )
             process_btn = gr.Button("Convert to Markdown", variant="primary")
             status_text = gr.Textbox(label="Status", interactive=False)
 
@@ -109,16 +157,17 @@ with gr.Blocks(title="Mistral OCR - PDF to Markdown") as demo:
     # Set up event handlers
     process_btn.click(
         fn=process_pdf_ocr,
-        inputs=[pdf_input],
+        inputs=[pdf_input, image_desc_toggle],
         outputs=[markdown_output, download_btn, status_text]
     )
 
     gr.Markdown("""
     ## Instructions
     1. Upload a PDF file using the file picker above
-    2. Click "Convert to Markdown" to process the PDF
-    3. View the extracted markdown in the output box
-    4. Download the markdown file using the download button
+    2. Toggle "Include image descriptions" to enable/disable AI-generated descriptions for figures and charts
+    3. Click "Convert to Markdown" to process the PDF
+    4. View the extracted markdown in the output box
+    5. Download the markdown file using the download button
 
     **Note:** Make sure you have set the `MISTRAL_API_KEY` environment variable with your Mistral API key.
     """)
