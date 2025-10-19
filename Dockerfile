@@ -5,11 +5,16 @@ WORKDIR /app
 # Install uv for fast package management
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 
+# Install dependencies using uv
+RUN uv pip install --system \
+    "mistralai>=1.0.0" \
+    "gradio>=4.0.0" \
+    "python-dotenv>=1.0.0" \
+    "pydantic>=2.0.0" \
+    "google-genai>=0.1.0"
+
 # Copy application file
 COPY app.py .
-
-# Install dependencies using uv
-RUN uv pip install --system mistralai gradio python-dotenv
 
 # Expose Gradio's default port
 EXPOSE 7860
